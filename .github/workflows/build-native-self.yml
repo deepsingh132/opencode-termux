@@ -111,6 +111,29 @@ jobs:
           PY
           ls -la "artifacts/transplant/${{ steps.ver.outputs.ver }}/"
 
+      - name: Seccomp-harden (prebuilt aarch64 shim)
+        if: steps.rel.outputs.exists == 'false'
+        run: |
+          V="${{ steps.ver.outputs.ver }}"
+          D="artifacts/transplant/$V"
+          cp tools/prebuilt/libopencode-crhandler.so "$D/libopencode-crhandler.so"
+          SRC="$D/opencode-native-tui"
+          [ -f "$SRC" ] || SRC="$D/opencode-native-revived"
+          if grep -aqF libopencode-crhandler.so "$SRC"; then
+            echo "already seccomp-hardened"
+          else
+            cp -p "$SRC" "$SRC.pre-crhandler"
+            python3 tools/transplant/crhandler_patch.py "$SRC"
+          fi
+          # keep the pre-swap fallback in sync with the hardened product
+          if [ "$SRC" = "$D/opencode-native-tui" ] && [ -f "$D/opencode-native-revived" ]; then
+            if ! grep -aqF libopencode-crhandler.so "$D/opencode-native-revived"; then
+              rm -f "$D/opencode-native-revived"
+              cp -p "$D/opencode-native-tui" "$D/opencode-native-revived"
+            fi
+          fi
+          grep -ac libopencode-crhandler.so "$SRC" || true
+
       - name: Package .deb (aarch64)
         if: steps.rel.outputs.exists == 'false'
         run: |
@@ -140,16 +163,18 @@ jobs:
             Self-serve native build of opencode ${{ steps.ver.outputs.ver }} for
             Termux (aarch64, Android API >= 28, zero glibc deps).
 
-            - `opencode_<ver>_aarch64.deb` - install with `dpkg -i`
-            - `opencode-native-tui` - raw single-ELF (TUI-swapped), `chmod +x`
-            - `opencode-native-revived` - pre-swap product (fallback)
+            - `opencode_<ver>_aarch64.deb` - install with `dpkg -i` (recommended;
+              bundles the seccomp shim at `/usr/lib/opencode/`)
+            - `opencode-native-tui` - raw single-ELF (TUI-swapped + hardened);
+              needs `libopencode-crhandler.so` beside it at `../lib/opencode/`
+            - `libopencode-crhandler.so` - seccomp hardening shim (aarch64)
             - `report.json` - transplant pipeline report (swap + tui_probe)
 
-            CI notes: no seccomp shim (harden on-device); no pacman package.
+            CI notes: no pacman package (makepkg unavailable on ubuntu).
             Runtime acceptance: verify `opencode --version` + TUI on device.
           files: |
             packing/dpkg-native/*.deb
             artifacts/transplant/${{ steps.ver.outputs.ver }}/opencode-native-tui
-            artifacts/transplant/${{ steps.ver.outputs.ver }}/opencode-native-revived
+            artifacts/transplant/${{ steps.ver.outputs.ver }}/libopencode-crhandler.so
             artifacts/transplant/${{ steps.ver.outputs.ver }}/report.json
           fail_on_unmatched_files: false
