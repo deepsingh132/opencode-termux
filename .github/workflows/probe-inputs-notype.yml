@@ -1,0 +1,13 @@
+name: Probe inputs notype
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "ver"
+        required: false
+        default: ""
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo pong
