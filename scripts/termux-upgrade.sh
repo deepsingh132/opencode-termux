@@ -133,13 +133,27 @@ resolve_version() {
 		printf '%s' "$VERSION"
 		return 0
 	fi
-	command -v npm >/dev/null 2>&1 || die "npm is required to resolve the latest version (or pass a version)"
-	npm view opencode-linux-arm64 version
+	local v=""
+	if command -v npm >/dev/null 2>&1; then
+		v="$(npm view opencode-linux-arm64 version 2>/dev/null || true)"
+	fi
+	if [ -z "$v" ] && command -v curl >/dev/null 2>&1; then
+		v="$(curl -fsSL --retry 3 https://api.github.com/repos/anomalyco/opencode/releases/latest 2>/dev/null |
+			sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' | head -n1)"
+	fi
+	[ -n "$v" ] || die "could not resolve the latest version (install 'npm', or pass a version like: $0 1.18.31)"
+	printf '%s' "$v"
 }
 
 # --- main ---------------------------------------------------------------------
 if [ "$MODE" = "build" ]; then
 	ensure_deps
+fi
+if [ "$MODE" = "release" ]; then
+	if ! command -v curl >/dev/null 2>&1; then
+		command -v pkg >/dev/null 2>&1 && pkg install -y curl
+	fi
+	command -v curl >/dev/null 2>&1 || die "curl is required for --release mode"
 fi
 command -v dpkg >/dev/null 2>&1 || die "dpkg is required to install the package"
 
