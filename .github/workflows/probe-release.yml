@@ -1,0 +1,14 @@
+name: Probe release
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: probe-test
+          files: |
+            README.md
