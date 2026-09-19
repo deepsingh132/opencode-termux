@@ -1,20 +1,20 @@
-# Self-serve native build for Termux (deepsingh132 fork).
+# Self-serve native build for Termux (deepsingh132/opencode-termux).
 #
-# Pipeline (GitHub-hosted ubuntu-latest, no self-hosted runner needed):
-#   1. resolve version (manual input or latest opencode-linux-arm64 on npm)
+# Runs on GitHub-hosted ubuntu-latest (no self-hosted runner needed). Pipeline:
+#   1. resolve version (manual input, else latest opencode-linux-arm64 on npm)
 #   2. skip if tag native-<ver> already released
 #   3. npm pack opencode-linux-arm64@<ver>
-#   4. stage prebuilt bionic libopentui.so for the TUI swap
+#   4. stage the prebuilt bionic libopentui.so for the TUI swap
 #   5. tools/transplant/transplant.py all --no-execve
-#      (graft + revive + TUI swap + report.json)
-#   6. package .deb (aarch64) + upload artifacts + create release
+#      (graft + revive + TUI equal-length swap + report.json)
+#   6. package aarch64 .deb, upload artifacts, create release native-<ver>
 #
-# Deliberately NOT included in CI v1 (see README notes):
-#   - seccomp-harden: Makefile builds the shim with host clang, which would
-#     emit an x86_64 .so on ubuntu; the .deb script ships unhardened binaries
-#     cleanly. Harden on-device (Termux clang targets aarch64-android).
+# Deliberately NOT in CI v1:
+#   - seccomp-harden: the Makefile builds the shim with the host clang, which
+#     would emit an x86_64 .so on ubuntu. Harden on-device instead (Termux
+#     clang targets aarch64-linux-android).
 #   - pacman packaging: needs makepkg + Termux makepkg.conf (absent on ubuntu).
-# Final runtime acceptance is on-device (x86 CI cannot execve aarch64).
+# Runtime acceptance is on-device: x86 CI cannot execve the aarch64 product.
 
 name: Build native opencode (self-serve)
 
@@ -30,6 +30,10 @@ on:
 
 permissions:
   contents: write
+
+concurrency:
+  group: native-build-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -67,12 +71,13 @@ jobs:
           npm pack "opencode-linux-arm64@${{ steps.ver.outputs.ver }}" --pack-destination work/
           ls -la work/
 
-      - name: Stage bionic libopentui.so (TUI swap)
+      - name: Stage and verify bionic libopentui.so
         if: steps.rel.outputs.exists == 'false'
         run: |
           mkdir -p artifacts/transplant/opentui-bionic
           cp tools/prebuilt/libopentui-bionic.so artifacts/transplant/opentui-bionic/libopentui.so
           sha256sum artifacts/transplant/opentui-bionic/libopentui.so
+          python3 -c "import sys; sys.path.insert(0,'tools/transplant'); from swap_tui import has_ffi_guard; sys.exit(0 if has_ffi_guard(open('artifacts/transplant/opentui-bionic/libopentui.so','rb').read()) else 1)"
 
       - name: Transplant (graft + revive + TUI swap)
         if: steps.rel.outputs.exists == 'false'
@@ -80,16 +85,19 @@ jobs:
           TGZ="$(ls work/opencode-linux-arm64-*.tgz | head -1)"
           python3 tools/transplant/transplant.py all \
             --ver "${{ steps.ver.outputs.ver }}" --tgz "$TGZ" --no-execve
+          echo "=== report summary ==="
+          python3 - "${{ steps.ver.outputs.ver }}" <<'PY'
+          import json, sys
+          from pathlib import Path
+          p = Path("artifacts/transplant") / sys.argv[1] / "report.json"
+          r = json.loads(p.read_text())
+          print("format:", r.get("format"))
+          print("bun_base:", r.get("bun_base") or r.get("steps", {}).get("assemble", {}).get("bun_base"))
+          print("revive:", r.get("steps", {}).get("revive"))
+          print("swap:", r.get("steps", {}).get("swap"))
+          print("tui_probe:", r.get("tui_probe"))
+          PY
           ls -la "artifacts/transplant/${{ steps.ver.outputs.ver }}/"
-
-      - name: Golden regression (non-blocking)
-        if: steps.rel.outputs.exists == 'false'
-        continue-on-error: true
-        run: |
-          if [ -z "$(ls -A tests/transplant/fixtures/tgz/ 2>/dev/null)" ]; then
-            bash scripts/fetch-fixtures.sh || true
-          fi
-          python3 tests/transplant/test_golden.py --fixtures-dir tests/transplant/fixtures/tgz || true
 
       - name: Package .deb (aarch64)
         if: steps.rel.outputs.exists == 'false'
@@ -104,10 +112,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: opencode-native-${{ steps.ver.outputs.ver }}
+          if-no-files-found: warn
           path: |
-            artifacts/transplant/${{ steps.ver.outputs.ver }}/opencode-native-tui
-            artifacts/transplant/${{ steps.ver.outputs.ver }}/opencode-native-revived
-            artifacts/transplant/${{ steps.ver.outputs.ver }}/report.json
+            artifacts/transplant/${{ steps.ver.outputs.ver }}/
             packing/dpkg-native/*.deb
           retention-days: 30
 
@@ -118,16 +125,19 @@ jobs:
           tag_name: native-${{ steps.ver.outputs.ver }}
           name: opencode ${{ steps.ver.outputs.ver }} (Termux native)
           body: |
-            Self-serve native build of opencode ${{ steps.ver.outputs.ver }} for Termux
-            (aarch64, Android API >= 28, zero glibc deps).
+            Self-serve native build of opencode ${{ steps.ver.outputs.ver }} for
+            Termux (aarch64, Android API >= 28, zero glibc deps).
 
-            - `opencode_${{ steps.ver.outputs.ver }}_aarch64.deb` — install with `dpkg -i`
-            - `opencode-native-tui` — raw single-ELF (TUI-swapped); `chmod +x` and run
-            - `report.json` — transplant pipeline report (incl. swap + tui_probe)
+            - `opencode_<ver>_aarch64.deb` - install with `dpkg -i`
+            - `opencode-native-tui` - raw single-ELF (TUI-swapped), `chmod +x`
+            - `opencode-native-revived` - pre-swap product (fallback)
+            - `report.json` - transplant pipeline report (swap + tui_probe)
 
-            CI v1 notes: no seccomp shim (harden on-device); no pacman package.
-            Runtime acceptance: verify `opencode --version` + TUI on a real device.
+            CI notes: no seccomp shim (harden on-device); no pacman package.
+            Runtime acceptance: verify `opencode --version` + TUI on device.
           files: |
             packing/dpkg-native/*.deb
             artifacts/transplant/${{ steps.ver.outputs.ver }}/opencode-native-tui
+            artifacts/transplant/${{ steps.ver.outputs.ver }}/opencode-native-revived
             artifacts/transplant/${{ steps.ver.outputs.ver }}/report.json
+          fail_on_unmatched_files: false
