@@ -42,6 +42,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Provide llvm-strip (aarch64 ELF)
+        run: |
+          if ! command -v llvm-strip >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq llvm
+          fi
+          if ! command -v llvm-strip >/dev/null 2>&1; then
+            CAND="$(ls /usr/bin/llvm-strip-* 2>/dev/null | sort -V | tail -1)"
+            sudo ln -sf "$CAND" /usr/local/bin/llvm-strip
+          fi
+          llvm-strip --version | head -1
+
       - name: Resolve version
         id: ver
         run: |
