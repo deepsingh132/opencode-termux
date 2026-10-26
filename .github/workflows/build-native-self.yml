@@ -56,10 +56,15 @@ jobs:
 
       - name: Resolve version
         id: ver
+        env:
+          # Temporary pin: 1.19.4's module graph does not parse on the bun 1.4.0
+          # base (SyntaxError: Invalid character: '\0'); 1.19.3 is the last
+          # known-good self-serve build. Bump after 1.19.4 graft support lands.
+          PIN_VERSION: "1.19.3"
         run: |
           V="${{ github.event.inputs.version }}"
           if [ -z "$V" ]; then
-            V="$(npm view opencode-linux-arm64 version)"
+            V="$PIN_VERSION"
           fi
           echo "ver=$V" >> "$GITHUB_OUTPUT"
           echo "target opencode $V"
